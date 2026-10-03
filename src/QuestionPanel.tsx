@@ -11,7 +11,13 @@ type Turn = {
   warnings?: string[];
   mode?: string;
 };
-export default function QuestionPanel({ backend }: { backend: boolean }) {
+export default function QuestionPanel({
+  backend,
+  onOpenSettings,
+}: {
+  backend: boolean;
+  onOpenSettings: () => void;
+}) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
   const [mode, setMode] = useState("hybrid");
@@ -19,7 +25,14 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function ask(value = question) {
-    if (!value.trim() || busy || !backend) return;
+    if (!value.trim() || busy) return;
+    if (!sessionStorage.getItem("pilot-token")?.trim()) {
+      setError(
+        "请在工作空间设置中填写访问令牌（PILOT_AUTH_TOKEN），它与模型 API Key 不同。",
+      );
+      onOpenSettings();
+      return;
+    }
     setBusy(true);
     setError("");
     const user: Turn = { role: "user", content: value.trim() };
@@ -53,7 +66,9 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
         <MessageSquare size={24} />
         <div>
           <strong>工程知识问答</strong>
-          <p>结合知识库理解需求、设计与验证问题，回答附带可展开的资料来源。</p>
+          <p>
+            优先检索工程知识；未命中时由通用大模型回答，知识库回答附带资料来源。
+          </p>
         </div>
         <Tag>AI 生成，需人工核实</Tag>
       </div>
@@ -61,7 +76,8 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
         <Alert
           type="warning"
           showIcon
-          message="请先启动后端并在工作空间设置中配置访问令牌。"
+          message="正在等待后端连接；服务启动后会自动重连。你也可以直接发送问题重试。"
+          action={<Button onClick={onOpenSettings}>连接设置</Button>}
         />
       )}
       <section className="panel qa-panel">
@@ -118,7 +134,7 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
                 ].map((q) => (
                   <Button
                     key={q}
-                    disabled={!backend || busy}
+                    disabled={busy}
                     onClick={() => setQuestion(q)}
                   >
                     {q}
@@ -134,12 +150,19 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
                 <Tag>
                   {t.mode === "model"
                     ? "AI 生成，需人工核实"
-                    : t.mode === "retrieval_only"
-                      ? "仅检索资料"
-                      : "缺少知识依据"}
+                    : t.mode === "general_model"
+                      ? "通用模型回答 · 未引用知识库"
+                      : t.mode === "retrieval_only"
+                        ? "仅检索资料"
+                        : "缺少知识依据"}
                 </Tag>
               )}
               <p className="qa-answer">{t.content}</p>
+              {t.mode === "general_model" && (
+                <p className="qa-source-note">
+                  未命中知识库，本回答基于模型通用知识，需人工核实。
+                </p>
+              )}
               {t.warnings?.map((w) => (
                 <Alert key={w} type="warning" message={w} />
               ))}
@@ -171,7 +194,14 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
           ))}
           {busy && <p>正在检索知识并生成回答…</p>}
         </div>
-        {error && <Alert type="error" showIcon message={error} />}
+        {error && (
+          <Alert
+            type="error"
+            showIcon
+            message={error}
+            action={<Button onClick={onOpenSettings}>连接设置</Button>}
+          />
+        )}
         <div className="qa-compose">
           <Input.TextArea
             aria-label="问答问题"
@@ -193,7 +223,7 @@ export default function QuestionPanel({ backend }: { backend: boolean }) {
             type="primary"
             icon={<Send size={16} />}
             loading={busy}
-            disabled={!backend || !question.trim()}
+            disabled={busy || !question.trim()}
             onClick={() => ask()}
           >
             发送问题

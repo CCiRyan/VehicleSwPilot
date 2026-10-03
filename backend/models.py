@@ -54,6 +54,11 @@ def chat_model():
     base = os.getenv("PILOT_CHAT_BASE_URL") or os.getenv("OPENAI_BASE_URL")
     if base:
         kwargs["base_url"] = base
+    thinking = os.getenv("PILOT_CHAT_ENABLE_THINKING", "").strip().lower()
+    if thinking:
+        if thinking not in ("true", "false"):
+            raise ValueError("PILOT_CHAT_ENABLE_THINKING 必须为 true 或 false")
+        kwargs["extra_body"] = {"enable_thinking": thinking == "true"}
     return ChatOpenAI(**kwargs)
 
 
@@ -68,8 +73,16 @@ def embedding_model():
         api_key=key,
         request_timeout=float(os.getenv("PILOT_MODEL_TIMEOUT", "90")),
         max_retries=1,
+        # Compatible services may reject OpenAI token arrays; chunks are already bounded.
+        check_embedding_ctx_length=False,
     )
     base = os.getenv("PILOT_EMBEDDING_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+    batch_size = int(os.getenv("PILOT_EMBEDDING_BATCH_SIZE", "64"))
+    if batch_size < 1 or batch_size > 2048:
+        raise ValueError("PILOT_EMBEDDING_BATCH_SIZE 必须在 1 到 2048 之间")
+    if kwargs["model"] == "text-embedding-v4":
+        batch_size = min(batch_size, 10)
+    kwargs["chunk_size"] = batch_size
     if base:
         kwargs["base_url"] = base
     if os.getenv("PILOT_EMBEDDING_DIMENSIONS"):

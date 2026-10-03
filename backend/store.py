@@ -92,6 +92,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, data TEXT);
         CREATE TABLE IF NOT EXISTS traces(id TEXT PRIMARY KEY, data TEXT);
         CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, data TEXT);
+        CREATE TABLE IF NOT EXISTS workspace_settings(id TEXT PRIMARY KEY, data TEXT);
         """)
         if not self.conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]:
             for item in SEED:

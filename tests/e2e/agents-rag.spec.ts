@@ -1,5 +1,39 @@
 import { test, expect } from "@playwright/test";
 const auth = { Authorization: "Bearer browser-test-reviewer" };
+test("连接检查失败后仍可发送问题，并提示缺少访问令牌", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.abort());
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "知识问答", exact: true }).click();
+  await page.getByLabel("问答问题").fill("SWR-QA-991");
+  await expect(page.getByRole("button", { name: "发送问题" })).toBeEnabled();
+  await page.getByRole("button", { name: "发送问题" }).click();
+  await expect(page.locator(".qa-turn.assistant")).toBeVisible({
+    timeout: 30000,
+  });
+  await page.evaluate(() => sessionStorage.removeItem("pilot-token"));
+  await page.getByLabel("问答问题").fill("另一个问题");
+  await page.getByRole("button", { name: "发送问题" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "本地服务连接" }),
+  ).toBeVisible();
+  await expect(page.getByText(/请在工作空间设置中填写访问令牌/)).toBeVisible();
+});
+
+test("后端稍后启动时页面自动重连", async ({ page }) => {
+  let attempts = 0;
+  let available = false;
+  await page.route("**/api/health", (route) => {
+    attempts++;
+    return available ? route.continue() : route.abort();
+  });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("本地演示模式", { exact: true })).toBeVisible();
+  available = true;
+  await expect(page.getByText("本地服务已连接", { exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(attempts).toBeGreaterThan(1);
+});
 test("知识问答展示检索来源并可清空会话", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8011/api/knowledge", {
     headers: auth,

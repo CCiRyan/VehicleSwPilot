@@ -12,11 +12,13 @@ import {
   Upload,
   Switch,
   Empty,
+  Alert,
   Tooltip,
 } from "antd";
 import { ProTable } from "@ant-design/pro-components";
 import {
   LayoutDashboard,
+  ClipboardCheck,
   Workflow,
   GitBranch,
   Bot,
@@ -62,6 +64,9 @@ import {
 import { api } from "./api";
 import KnowledgePanel from "./KnowledgePanel";
 import QuestionPanel from "./QuestionPanel";
+import RoleWorkspaces from "./RoleWorkspaces";
+import ProjectSwitcher from "./ProjectSwitcher";
+import ProjectPaths from "./ProjectPaths";
 import AgentEvidence from "./AgentEvidence";
 
 const navigation = [
@@ -71,6 +76,9 @@ const navigation = [
   { id: "agents", name: "Agent 管理", icon: Bot },
   { id: "knowledge", name: "RAG 知识库", icon: BookOpen },
   { id: "questions", name: "知识问答", icon: Send },
+  { id: "review-center", name: "评审中心", icon: ClipboardCheck },
+  { id: "configuration", name: "配置管理", icon: Settings },
+  { id: "process-audit", name: "ASPICE 审核", icon: ShieldCheck },
   { id: "reports", name: "报告与交付", icon: FileOutput },
 ];
 const statusLabel: Record<string, string> = {
@@ -131,7 +139,7 @@ async function exportTrace(rows: typeof traceRows) {
   );
   const a = document.createElement("a");
   a.href = url;
-  a.download = "BMS-双向追溯矩阵.xlsx";
+  a.download = "VCP-双向追溯矩阵.xlsx";
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -232,29 +240,46 @@ export default function App() {
     localStorage.setItem("pilot-traces", JSON.stringify(traces));
   }, [traces]);
   useEffect(() => {
-    api("/health")
-      .then((health) => {
-        setBackend(true);
-        setServerMode(health.mode);
-        setExecutionAvailable(
-          !!health.simulation?.docker_available &&
-            !!health.simulation?.container_execution_enabled,
-        );
-        api("/me")
-          .then((r) => setRole(r.role))
-          .catch(() => {});
-        api("/artifacts")
-          .then(setArtifacts)
-          .catch(() => {});
-        api("/traces")
-          .then(setTraces)
-          .catch(() => {});
-        api("/logs")
-          .then(setLogs)
-          .catch(() => {});
-      })
-      .catch(() => setBackend(false));
-  }, []);
+    if (backend) return;
+    let cancelled = false;
+    let checking = false;
+    const connect = () => {
+      if (checking) return;
+      checking = true;
+      api("/health")
+        .then((health) => {
+          if (cancelled) return;
+          setBackend(true);
+          setServerMode(health.mode);
+          setExecutionAvailable(
+            !!health.simulation?.docker_available &&
+              !!health.simulation?.container_execution_enabled,
+          );
+          api("/me")
+            .then((r) => setRole(r.role))
+            .catch(() => {});
+          api("/artifacts")
+            .then(setArtifacts)
+            .catch(() => {});
+          api("/traces")
+            .then(setTraces)
+            .catch(() => {});
+          api("/logs")
+            .then(setLogs)
+            .catch(() => {});
+        })
+        .catch(() => {})
+        .finally(() => {
+          checking = false;
+        });
+    };
+    connect();
+    const timer = window.setInterval(connect, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [backend]);
   async function updateArtifact(content: string) {
     const next = {
       ...artifact,
@@ -392,15 +417,7 @@ export default function App() {
         <div className="space-label">
           工作空间 <ChevronDown size={12} />
         </div>
-        <button className="project-switch">
-          <span className="project-icon">
-            <Folder size={17} />
-          </span>
-          <span>
-            BMS 控制器<small>电池管理系统开发项目</small>
-          </span>
-          <ChevronDown size={14} />
-        </button>
+        <ProjectSwitcher backend={backend} role={role} />
         <div className="nav-label">项目</div>
         <nav>
           {navigation.map((n) => (
@@ -448,7 +465,7 @@ export default function App() {
       <div className="main-shell">
         <header className="topbar">
           <div className="breadcrumb">
-            工作空间 <ChevronRight size={13} /> BMS 控制器{" "}
+            工作空间 <ChevronRight size={13} /> VCP 控制器{" "}
             <ChevronRight size={13} />
             <strong>{header.name}</strong>
           </div>
@@ -478,6 +495,9 @@ export default function App() {
               options={[
                 "软件工程师",
                 "系统工程师",
+                "评审负责人",
+                "配置管理员",
+                "ASPICE 审核员",
                 "测试工程师",
                 "安全经理",
               ].map((value) => ({ value, label: value }))}
@@ -486,9 +506,19 @@ export default function App() {
           </div>
         </header>
         <main>
+          {artifacts.some((a) =>
+            /BMS|Bms_|电池管理系统/.test(a.name + a.content),
+          ) && (
+            <Alert
+              className="legacy-project-note"
+              type="info"
+              showIcon
+              message="当前空间已更名为 VCP 控制器。现有 BMS 示例需求、设计与代码保留原记录，需按 VCP 项目需求修订并重新评审。"
+            />
+          )}
           <div className="page-heading">
             <div>
-              <div className="eyebrow">BMS CONTROLLER / WORKSPACE</div>
+              <div className="eyebrow">VCP CONTROLLER / WORKSPACE</div>
               <h1>
                 {header.name}
                 {page === "dashboard" && (
@@ -549,7 +579,7 @@ export default function App() {
               <div className="project-meta">
                 <span>
                   <Folder size={14} />
-                  BMS-2026-001
+                  VCP-2026-001
                 </span>
                 <span>
                   ASIL <b>B</b>
@@ -1596,7 +1626,39 @@ export default function App() {
             </>
           )}
           {page === "knowledge" && <KnowledgePanel backend={backend} />}
-          {page === "questions" && <QuestionPanel backend={backend} />}
+          {page === "configuration" && (
+            <section className="panel qa-panel">
+              <ProjectPaths backend={backend} role={role} />
+            </section>
+          )}
+          {["review-center", "configuration", "process-audit"].includes(
+            page,
+          ) && (
+            <RoleWorkspaces
+              kind={
+                page === "review-center"
+                  ? "review"
+                  : page === "configuration"
+                    ? "configuration"
+                    : "audit"
+              }
+              backend={backend}
+              artifacts={artifacts}
+              traces={traces}
+              onArtifact={(a) => {
+                setSelected(a.id);
+                setStage(a.stage);
+                setPage("workspace");
+              }}
+              onNavigate={setPage}
+            />
+          )}
+          {page === "questions" && (
+            <QuestionPanel
+              backend={backend}
+              onOpenSettings={() => setSettings(true)}
+            />
+          )}
           {page === "reports" && (
             <>
               <div className="section-callout">
@@ -1650,7 +1712,7 @@ export default function App() {
                         onClick={() =>
                           download(
                             r.id + ".md",
-                            `# ${r.name}\n\n项目：BMS 控制器 · ASIL B\n\n状态：草稿；未执行合规认证或真实测试。\n\n` +
+                            `# ${r.name}\n\n项目：VCP 控制器 · ASIL B\n\n状态：草稿；历史 BMS 示例工件需按 VCP 需求重新修订及评审。未执行合规认证或真实测试。\n\n` +
                               artifacts
                                 .map(
                                   (a) =>
@@ -1686,7 +1748,7 @@ export default function App() {
                               );
                               const a = document.createElement("a");
                               a.href = u;
-                              a.download = `BMS-${r.id}.${f}`;
+                              a.download = `VCP-${r.id}.${f}`;
                               a.click();
                               setTimeout(() => URL.revokeObjectURL(u), 1000);
                             } catch (e) {

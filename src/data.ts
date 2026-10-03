@@ -44,6 +44,7 @@ export type Artifact = {
     }[];
   };
   execution?: {
+    executed?: boolean;
     status: string;
     summary?: string;
     scope?: string;
