@@ -499,9 +499,9 @@ LABELS = {
 
 def render_candidate(payload, mode):
     lines = [
-        "【AI 生成，需人工评审】",
+        "【用户导入，需人工评审】" if mode == "imported" else "【AI 生成，需人工评审】",
         f'# {payload["title"]}',
-        f'ASIL：{payload["asil"]} · 模式：{"真实模型候选" if mode=="model" else "离线模板（未调用模型）"}',
+        f'ASIL：{payload["asil"]} · 模式：{"真实模型候选" if mode=="model" else "用户导入（未调用模型）" if mode=="imported" else "离线模板（未调用模型）"}',
         payload["summary"],
     ]
 

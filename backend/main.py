@@ -25,6 +25,7 @@ from .agents import (
 from .models import chat_configured, structured_call
 from .execution import capabilities, execute_c, inspect_candidate
 from .workspace_paths import default_paths, normalize_paths
+from . import workspace_files
 
 DATA = Path(os.getenv("PILOT_DATA_DIR", str(Path(__file__).parent / "data")))
 store = None
@@ -236,6 +237,228 @@ def save_workspace_paths(body: SaveWorkspacePaths, actor=Depends(identity)):
             "workspace_paths_updated",
             actor,
             f"default v{result['version']} (metadata only)",
+        )
+        return result
+
+
+class ProjectDefinition(BaseModel):
+    fullName: str = Field(default="", max_length=200)
+    scope: str = Field(default="", max_length=3000)
+    hardware: str = Field(default="", max_length=3000)
+    interfaces: str = Field(default="", max_length=3000)
+    asil: Literal["待确认", "QM", "A", "B", "C", "D"] = "待确认"
+    acceptance: str = Field(default="", max_length=3000)
+    exclusions: str = Field(default="", max_length=3000)
+
+
+class SaveProjectDefinition(BaseModel):
+    version: int = Field(ge=0)
+    definition: ProjectDefinition
+
+
+@app.get("/api/workspace/definition")
+def get_project_definition(actor=Depends(identity)):
+    with store.lock:
+        row = store.conn.execute(
+            "SELECT data FROM workspace_settings WHERE id='definition'"
+        ).fetchone()
+        return json.loads(row[0]) if row else dict(
+            version=0, definition=ProjectDefinition().model_dump(),
+            updated_at=None, updated_by=None,
+        )
+
+
+@app.put("/api/workspace/definition")
+def save_project_definition(body: SaveProjectDefinition, actor=Depends(identity)):
+    require_role(actor, ["安全经理", "系统工程师"])
+    with store.lock, store.conn:
+        if get_project_definition(actor)["version"] != body.version:
+            raise HTTPException(409, "项目定义已更新，请重新加载后保存；当前输入仍保留")
+        result = dict(version=body.version + 1,
+                      definition=body.definition.model_dump(),
+                      updated_at=now(), updated_by=actor)
+        store.conn.execute(
+            "INSERT OR REPLACE INTO workspace_settings VALUES('definition',?)",
+            (json.dumps(result, ensure_ascii=False),),
+        )
+        store.audit("project_definition_updated", actor, f"default v{result['version']}")
+        return result
+
+
+@app.get("/api/workspace/files/preview")
+def preview_workspace_file(
+    scope: Literal["documents", "source", "tests", "reports"],
+    path: str,
+    actor=Depends(identity),
+):
+    try:
+        name, body, digest = workspace_files.read_file(
+            workspace_path_settings()["paths"], scope, path
+        )
+        if Path(name).suffix.lower() not in {".c", ".h", ".md", ".txt"}:
+            return dict(name=name, size=len(body), sha256=digest, content=None,
+                        truncated=False, message="此格式请使用文档阅读器查看；可导入知识库解析。")
+        text = body.decode("utf-8-sig")
+        return dict(name=name, size=len(body), sha256=digest,
+                    content=text[:100000], truncated=len(text) > 100000)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(422, "文本不是 UTF-8，请先转换编码") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class ImportFiles(BaseModel):
+    scope: Literal["documents", "source", "tests"]
+    files: list[str] = Field(min_length=1, max_length=20)
+    index_mode: Literal["keyword", "vector"] = "keyword"
+
+
+@app.get("/api/workspace/files")
+def workspace_file_list(
+    scope: Literal["documents", "source", "tests", "reports"], actor=Depends(identity)
+):
+    try:
+        return workspace_files.list_files(workspace_path_settings()["paths"], scope)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/workspace/files/import")
+def import_workspace_files(body: ImportFiles, actor=Depends(identity)):
+    if body.scope == "documents":
+        require_role(actor, ["安全经理", "系统工程师"])
+    else:
+        require_stage(actor, "编码实现" if body.scope == "source" else "单元测试")
+    if len(set(body.files)) != len(body.files):
+        raise HTTPException(422, "重复的文件路径")
+    try:
+        contents = [
+            workspace_files.read_file(workspace_path_settings()["paths"], body.scope, p)
+            for p in body.files
+        ]
+        if body.scope == "documents":
+            imported = [
+                knowledge.add(
+                    name,
+                    data,
+                    metadata=dict(
+                        category="project",
+                        version="file-" + digest[:12],
+                        stage="all",
+                        asil="",
+                    ),
+                    index_mode=body.index_mode,
+                )
+                for name, data, digest in contents
+            ]
+            store.audit("directory_documents_imported", actor, f"{len(imported)} files")
+            return dict(documents=imported)
+        if sum(len(data) for _, data, _ in contents) > 200000:
+            raise ValueError("源码输入超过 200 KB")
+        text = [
+            (name, data.decode("utf-8-sig"), digest) for name, data, digest in contents
+        ]
+        stage = "编码实现" if body.scope == "source" else "单元测试"
+        identifier = "IMP-" + uuid.uuid4().hex[:8].upper()
+        payload = dict(
+            title="目录导入工件",
+            summary="用户选择的本地文件；尚未完成需求追溯或执行验证。",
+            asil="QM",
+            assumptions=[],
+            open_questions=["确认安全等级、需求追溯和接口一致性"],
+            trace_links=[],
+            citations=[],
+        )
+        if body.scope == "source":
+            payload["files"] = [
+                dict(
+                    id=f"{identifier}-{i+1}",
+                    path=name,
+                    language="c" if name.endswith(".c") else "h",
+                    content=content,
+                )
+                for i, (name, content, _) in enumerate(text)
+            ]
+        else:
+            if len(text) != 1 or not text[0][0].endswith(".c"):
+                raise ValueError("测试桩导入请选择一个 UTF-8 C 文件")
+            payload.update(
+                test_harness=text[0][1],
+                test_cases=[],
+                coverage_plan=["需补充用例与覆盖证据"],
+            )
+        item = dict(
+            id=identifier,
+            name=payload["title"],
+            stage=stage,
+            version=1,
+            status="draft",
+            ai=False,
+            mode="imported",
+            structured=payload,
+            content=render_candidate(payload, "imported"),
+            file_sources=[
+                dict(path=p, sha256=entry[2]) for p, entry in zip(body.files, text)
+            ],
+            execution=inspect_candidate(payload),
+            safety_report=dict(
+                summary="用户导入，需人工评审",
+                findings=safety_checks(
+                    dict(
+                        candidate=payload,
+                        artifact={"id": identifier},
+                        stage=stage,
+                        references=[],
+                        mode="imported",
+                    )
+                ),
+            ),
+        )
+        with run_lock, store.lock:
+            store.save(item)
+            store.invalidate_downstream(stage)
+            store.audit("directory_code_imported", actor, identifier)
+        return dict(artifact=item)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            502, "文件导入未全部完成；请检查目录和知识库记录后重试"
+        ) from exc
+
+
+class ExportFileArtifact(BaseModel):
+    artifact_id: str
+    version: int
+
+
+@app.post("/api/workspace/files/export")
+def export_workspace_artifact(body: ExportFileArtifact, actor=Depends(identity)):
+    with run_lock, store.lock:
+        item = artifact_or_404(body.artifact_id)
+        require_stage(actor, item["stage"])
+        if body.version != item["version"]:
+            raise HTTPException(409, "工件已变化，请刷新")
+        try:
+            result = workspace_files.export_artifact(
+                workspace_path_settings()["paths"], item
+            )
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                502, "文件写入失败，请检查目标目录；不会覆盖已有文件"
+            ) from exc
+        result.update(id=uuid.uuid4().hex, type="file_export", time=now())
+        store.evidence(result)
+        store.audit(
+            "artifact_exported_to_directory", actor, f"{item['id']} v{item['version']}"
         )
         return result
 
@@ -1098,11 +1321,14 @@ def report(
         "safety": "安全分析报告",
     }
     title = titles[report_type]
+    definition = get_project_definition(actor)
+    project_name = definition["definition"]["fullName"] or "VCP 控制器（全称待确认）"
+    project_asil = definition["definition"]["asil"]
     lines = [
         title,
-        "项目：VCP 控制器 / ASIL B",
+        f"项目：{project_name} / 安全等级：{project_asil}（用户输入，需安全分析确认）",
         "历史 BMS 示例工件保留原记录，须按 VCP 项目需求修订并重新评审。",
-        "草稿工程报告。AI 生成内容需人工评审；未执行实际测试、MISRA 扫描或合规认证。",
+        "草稿工程报告。AI 生成内容需人工评审；实际测试结论仅以匹配当前工件版本的执行证据为准。未完成正式 MISRA 扫描或合规认证。",
         f"导出时间（UTC）：{now()}",
     ]
     for item in store.all():
@@ -1120,6 +1346,14 @@ def report(
             lines.append(
                 "人工评审记录：" + json.dumps(item["review"], ensure_ascii=False)
             )
+        if report_type in {"test", "safety"}:
+            current_evidence = [
+                record for record in evidence(item["id"], actor)
+                if record.get("artifact_id") == item["id"]
+                and record.get("artifact_version") == item["version"]
+            ]
+            lines.append("当前版本证据：" + (json.dumps(current_evidence, ensure_ascii=False)
+                                          if current_evidence else "无；不能判定执行通过。"))
     if report_type == "safety":
         lines += [
             "证据缺口：实际 MISRA 扫描、测试覆盖率、HARA、FMEA、DFA 与安全论证未在此 MVP 中完成。",

@@ -15,6 +15,7 @@ import {
 import { BookOpen, UploadCloud, RefreshCw, Search } from "lucide-react";
 import { api } from "./api";
 import { stages } from "./data";
+import RetrievalEvaluation from "./RetrievalEvaluation";
 const categories = [
   { value: "other", label: "其他资料" },
   { value: "autosar", label: "AUTOSAR" },
@@ -458,6 +459,7 @@ export default function KnowledgePanel({ backend }: { backend: boolean }) {
           ]}
         />
       </section>
+      <RetrievalEvaluation backend={backend} documents={documents} />
       <Modal
         open={!!detail}
         onCancel={() => setDetail(null)}

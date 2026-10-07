@@ -67,10 +67,14 @@ import QuestionPanel from "./QuestionPanel";
 import RoleWorkspaces from "./RoleWorkspaces";
 import ProjectSwitcher from "./ProjectSwitcher";
 import ProjectPaths from "./ProjectPaths";
+import ProjectDefinition from "./ProjectDefinition";
+import FileWorkspace from "./FileWorkspace";
 import AgentEvidence from "./AgentEvidence";
 
 const navigation = [
   { id: "dashboard", name: "项目总看板", icon: LayoutDashboard },
+  { id: "definition", name: "项目定义", icon: FileText },
+  { id: "files", name: "文件与验证", icon: Folder },
   { id: "workspace", name: "阶段工作台", icon: Workflow },
   { id: "trace", name: "双向追溯矩阵", icon: GitBranch },
   { id: "agents", name: "Agent 管理", icon: Bot },
@@ -148,6 +152,16 @@ export default function App() {
   const { message } = AntApp.useApp();
   const [page, setPage] = useState("dashboard"),
     [stage, setStage] = useState("详细设计");
+  const [agentAsil, setAgentAsil] = useState<string>(() => {
+    const definition = readLocal("pilot-definition-default", null) as {
+      asil?: string;
+    } | null;
+    return !definition
+      ? "B"
+      : ["QM", "A", "B", "C", "D"].includes(definition.asil || "")
+        ? definition.asil!
+        : "";
+  });
   const [artifacts, setArtifacts] = useState<Artifact[]>(() =>
     readLocal("pilot-artifacts", initialArtifacts),
   );
@@ -258,6 +272,21 @@ export default function App() {
           api("/me")
             .then((r) => setRole(r.role))
             .catch(() => {});
+          api("/workspace/definition")
+            .then((r) => {
+              if (r.version > 0) {
+                localStorage.setItem(
+                  "pilot-definition-default",
+                  JSON.stringify(r.definition),
+                );
+                setAgentAsil(
+                  ["QM", "A", "B", "C", "D"].includes(r.definition.asil)
+                    ? r.definition.asil
+                    : "",
+                );
+              }
+            })
+            .catch(() => {});
           api("/artifacts")
             .then(setArtifacts)
             .catch(() => {});
@@ -364,6 +393,12 @@ export default function App() {
   }
   async function send() {
     if (!prompt.trim() || busy) return;
+    if (!agentAsil) {
+      message.error(
+        "请先确认 Agent 任务的 ASIL 等级；不能将待确认等级默认为 B。",
+      );
+      return;
+    }
     const text = prompt;
     setPrompt("");
     setChat((c) => [...c, { role: "user", text }]);
@@ -376,6 +411,7 @@ export default function App() {
               stage,
               instruction: text,
               artifact_id: artifact.id,
+              asil: agentAsil,
             }),
           })
         : {
@@ -1352,7 +1388,16 @@ export default function App() {
                       这些提示用于辅助工程评审。当前未执行 MISRA 扫描或 ISO
                       26262 合规认证。
                     </p>
-                    <Tag bordered={false}>ASIL B</Tag>
+                    <Select
+                      aria-label="Agent 任务 ASIL"
+                      placeholder="ASIL 待确认"
+                      value={agentAsil || undefined}
+                      onChange={setAgentAsil}
+                      options={["QM", "A", "B", "C", "D"].map((value) => ({
+                        value,
+                        label: `ASIL ${value}`,
+                      }))}
+                    />
                     <Tag bordered={false}>MISRA C:2012</Tag>
                   </div>
                   {artifact.stage === stage && (
@@ -1360,6 +1405,7 @@ export default function App() {
                       artifact={artifact}
                       artifacts={artifacts}
                       backend={backend}
+                      asil={agentAsil}
                     />
                   )}
                   <div className="side-section">
@@ -1626,6 +1672,41 @@ export default function App() {
             </>
           )}
           {page === "knowledge" && <KnowledgePanel backend={backend} />}
+          {page === "files" && (
+            <FileWorkspace
+              backend={backend}
+              artifacts={artifacts}
+              onArtifact={(a) => {
+                setArtifacts((current) => [...current, a]);
+                openArtifact(a);
+                api("/artifacts")
+                  .then(setArtifacts)
+                  .catch(() => {});
+              }}
+            />
+          )}
+          {page === "definition" && (
+            <ProjectDefinition
+              backend={backend}
+              role={role}
+              onCreated={(a) => {
+                const definition = readLocal(
+                  "pilot-definition-default",
+                  {},
+                ) as { asil?: string };
+                setAgentAsil(
+                  ["QM", "A", "B", "C", "D"].includes(definition.asil || "")
+                    ? definition.asil!
+                    : "",
+                );
+                setArtifacts((current) => [...current, a]);
+                openArtifact(a);
+                api("/artifacts")
+                  .then(setArtifacts)
+                  .catch(() => {});
+              }}
+            />
+          )}
           {page === "configuration" && (
             <section className="panel qa-panel">
               <ProjectPaths backend={backend} role={role} />

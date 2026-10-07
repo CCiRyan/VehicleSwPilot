@@ -7,10 +7,12 @@ export default function AgentEvidence({
   artifact,
   artifacts,
   backend,
+  asil,
 }: {
   artifact: Artifact;
   artifacts: Artifact[];
   backend: boolean;
+  asil?: string;
 }) {
   const { message } = App.useApp();
   const [busy, setBusy] = useState(false),
@@ -104,13 +106,16 @@ export default function AgentEvidence({
           block
           size="small"
           loading={busy}
-          disabled={!backend}
+          disabled={!backend || !(artifact.structured?.asil || asil)}
           onClick={async () => {
             setBusy(true);
             try {
               const result = await api("/agents/safety/analyze", {
                 method: "POST",
-                body: JSON.stringify({ artifact_id: artifact.id, asil: "B" }),
+                body: JSON.stringify({
+                  artifact_id: artifact.id,
+                  asil: artifact.structured?.asil || asil,
+                }),
               });
               setSafety(result.report);
               message.success(

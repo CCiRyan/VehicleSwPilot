@@ -85,7 +85,7 @@ export default function ProjectPaths({
       setNotice(
         local
           ? "目录配置已保存在本地项目草稿中。"
-          : "项目目录配置已保存。未创建、迁移或同步文件。",
+          : "项目目录配置已保存。保存配置本身不会创建、迁移或同步文件。",
       );
     } catch (e) {
       setError(String(e));
@@ -105,7 +105,7 @@ export default function ProjectPaths({
         message={
           local
             ? "本地草稿配置；后端项目空间尚未启用。"
-            : "当前保存的是目录配置。工件仍由数据库管理，文件读写与同步尚未启用。"
+            : "工件仍由数据库管理。可在“文件与验证”显式扫描、导入和导出；不会自动同步。"
         }
       />
       {!writable && (
